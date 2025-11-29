@@ -1,0 +1,21 @@
+Final_Project_2025/
+├── Example/                # Implement here
+│   ├── Makefile            # Build file for compiling the example project.
+│   ├── README              # Instructions and details about the example project.
+│   └── project.cpp         # Example source code demonstrating the final project structure.
+│
+    ├── grading/            # Used to test all testbenchs located in the testcases folder.
+│   ├── README              # Instructions on how to grade projects using the provided scripts and testcases.
+│   ├── grading_example.sh  # Grading script for testing your project.
+│   ├── output/             # Folder for storing output files generated during grading.
+│   ├── student/            # Folder where students' binary files should be placed for testing.
+│   ├── testcases/          # Contains test cases for grading.
+│   └── verifier/           # Tools to verify the correctness of grading results.
+│
+├── testcases-release1/
+│   ├── bench/              # Folder containing benchmark files for project testing.
+│   └── config/             # Configuration files used for running the testcases.
+│
+└── verifier/               # Used to test a single testbench, requires .org, .lst, and .rst files
+    └── verify              # Verification tool to check the correctness of project outputs.
+
