@@ -1,283 +1,412 @@
 #include <iostream>
-#include <fstream>
-#include <vector>
 #include <string>
+#include <fstream>
 #include <cmath>
-#include <algorithm>
-#include <iomanip>
 #include <map>
+#include <algorithm>
+#include <vector>
+#include <set>
+#include <iomanip>
 
 using namespace std;
 
-struct Config {
+// --- Helper for Robust Config Reading ---
+// 解決 Address_bits 與 Address bits 格式不一致的問題
+void read_config_value(ifstream& infile, int& value) {
+    string label;
+    infile >> label; 
+    if (label.back() != ':') { 
+        infile >> label; 
+    }
+    infile >> value;
+}
+
+// --- Block Class ---
+class Block{
+public:
+    bool valid;
+    int ref_bit; // 1: Recently Used, 0: Replacement Candidate
+    string tag;
+
+    Block() {
+        valid = false;
+        ref_bit = 0; // Init to 0
+        tag = "";
+    }
+};
+
+// --- Cache Class (Fixed Clock Policy) ---
+class Cache{
+public:
+    Cache() {
+        associativity = 0;
+        clock_hand = 0;
+    }
+    Cache(int associativity) {
+        this->associativity = associativity;
+        this->clock_hand = 0;
+        if(associativity > 0) blocks.resize(associativity);
+    }
+    
+    // 回傳 true 代表 Hit, false 代表 Miss
+    bool access(string tag) {
+        // 1. Check Hit
+        for(int i = 0; i < associativity; i++) {
+            if(blocks[i].valid && blocks[i].tag == tag) {
+                blocks[i].ref_bit = 1; // Hit: set ref to 1
+                return true; // Hit: No pointer movement
+            }
+        }
+
+        // 2. Handle Miss (Clock Replacement)
+        while(true) {
+            // Case A: Empty Slot
+            if(!blocks[clock_hand].valid) {
+                blocks[clock_hand].valid = true;
+                blocks[clock_hand].tag = tag;
+                blocks[clock_hand].ref_bit = 1; // Insert: set to 1
+                clock_hand = (clock_hand + 1) % associativity; // Move next
+                return false;
+            }
+
+            // Case B: Second Chance
+            if(blocks[clock_hand].ref_bit == 1) {
+                blocks[clock_hand].ref_bit = 0; // Reset to 0
+                clock_hand = (clock_hand + 1) % associativity; // Move next
+            } 
+            // Case C: Victim Found
+            else {
+                // Replace
+                blocks[clock_hand].tag = tag;
+                blocks[clock_hand].ref_bit = 1; // New block gets 1
+                clock_hand = (clock_hand + 1) % associativity; // Move next
+                return false;
+            }
+        }
+    }
+
+private:
+    vector<Block> blocks;
+    int associativity;
+    int clock_hand; // [Critical Fix] Clock Policy needs a pointer
+};
+
+// --- Simulate Class (Preserved Your Logic) ---
+class Simulate{
+public:
+    Simulate() {
+        address_bits = 0; block_size = 0; cache_sets = 0; associativity = 0;
+        correlation_matrix = NULL;
+    }
+    ~Simulate() {
+        if(correlation_matrix != NULL) delete correlation_matrix;
+    }
+    void set_address_bits(int v) { address_bits = v;}
+    void set_block_size(int v) {
+        block_size = v;
+        offset_bits = (int)log2(block_size);
+        cache_bits = address_bits - offset_bits;
+    }
+    void set_cache_sets(int v) {
+        cache_sets = v;
+        index_bits_num = (int)log2(cache_sets);
+    }
+    void set_associativity(int v) { associativity = v;}
+    
+    // Getters
+    int get_address_bits() { return address_bits;}
+    int get_block_size() { return block_size;}
+    int get_cache_sets() { return cache_sets;}
+    int get_associativity() { return associativity;}
+    int get_offset_bits() { return offset_bits; }
+    int get_index_bits_num() { return index_bits_num; }
+
+    void simulation();
+    void recursion(int bits_remain, vector<double> quality, set<int> current_idx);
+    void initialize();
+    void set_corr_matrix(ifstream& infile);
+    void output(ofstream& outfile);
+
+private:
     int address_bits;
     int block_size;
     int cache_sets;
     int associativity;
-    int offset_bit_count;
-    int index_bit_count;
-};
-
-struct CacheBlock {
-    bool valid;
-    unsigned long long tag;
-    int ref_bit;
-};
-
-struct CacheSet {
-    vector<CacheBlock> blocks;
-    int clock_hand;
-};
-
-int log2_int(int n) {
-    int res = 0;
-    while (n >>= 1) res++;
-    return res;
-}
-
-unsigned long long binaryStringToInt(const string& s) {
-    return stoull(s, nullptr, 2);
-}
-
-void read_config_value(ifstream& fin, int& value) {
-    string label;
-    fin >> label;
-    if (label.back() != ':') {
-        fin >> label;
-    }
-    fin >> value;
-}
-
-int get_set_index(unsigned long long addr, const vector<int>& index_bits) {
-    int index = 0;
-    for (int i = 0; i < index_bits.size(); ++i) {
-        int bit_pos = index_bits[i];
-        if ((addr >> bit_pos) & 1) {
-            index |= (1 << i);
-        }
-    }
-    return index;
-}
-
-vector<int> calculate_optimized_bits(const Config& cfg, const vector<unsigned long long>& trace) {
-    vector<unsigned long long> unique_refs = trace;
-    sort(unique_refs.begin(), unique_refs.end());
-    unique_refs.erase(unique(unique_refs.begin(), unique_refs.end()), unique_refs.end());
+    int offset_bits;
+    int index_bits_num;
+    int cache_bits; // M - O
     
-    int M = cfg.address_bits;
-    int K = cfg.index_bit_count;
-    int Offset = cfg.offset_bit_count;
+    vector<string> ref; // Stores reversed binary strings
+    set< set < int > > candidates; // Changed name from index_bits to avoid confusion
+    string benchmark;
+    
+    map<string,Cache> simulate_cache; 
+    vector< vector< double > >* correlation_matrix;
+    int min_miss = 1e9;
+    set < int > best_bits;
+};
 
-    vector<int> candidate_bits;
-    for (int i = Offset; i < M; ++i) {
-        candidate_bits.push_back(i);
-    }
-
-    if (candidate_bits.size() <= K) {
-        sort(candidate_bits.rbegin(), candidate_bits.rend());
-        return candidate_bits;
-    }
-
-    map<int, double> Q;
-    for (int bit : candidate_bits) {
-        int zeros = 0, ones = 0;
-        for (unsigned long long addr : unique_refs) {
-            if ((addr >> bit) & 1) ones++; else zeros++;
-        }
-        if (zeros == 0 || ones == 0) Q[bit] = 0.0;
-        else Q[bit] = (double)min(zeros, ones) / (double)max(zeros, ones);
-    }
-
-    map<int, map<int, double>> C;
-    for (size_t i = 0; i < candidate_bits.size(); ++i) {
-        for (size_t j = i + 1; j < candidate_bits.size(); ++j) {
-            int b1 = candidate_bits[i];
-            int b2 = candidate_bits[j];
-            int same = 0, diff = 0;
-            
-            for (unsigned long long addr : unique_refs) {
-                int v1 = (addr >> b1) & 1;
-                int v2 = (addr >> b2) & 1;
-                if (v1 == v2) same++; else diff++;
-            }
-            
-            double val = 0.0;
-            if (same != 0 && diff != 0) 
-                val = (double)min(same, diff) / (double)max(same, diff);
-            
-            C[b1][b2] = val;
-            C[b2][b1] = val;
-        }
-    }
-
-    vector<int> S;
-    vector<int> remaining = candidate_bits;
-
-    for (int k = 0; k < K; ++k) {
-        int best_bit = -1;
-        double max_q = -1.0;
-
-        for (int bit : remaining) {
-            if (Q[bit] > max_q) {
-                max_q = Q[bit];
-                best_bit = bit;
-            }
-        }
-
-        if (best_bit != -1) {
-            S.push_back(best_bit);
-            remaining.erase(remove(remaining.begin(), remaining.end(), best_bit), remaining.end());
-
-            for (int bit : remaining) {
-                Q[bit] = Q[bit] * C[best_bit][bit];
-            }
-        } else {
-            if (!remaining.empty()) {
-                S.push_back(remaining.front());
-                remaining.erase(remaining.begin());
-            }
-        }
-    }
-
-    sort(S.rbegin(), S.rend());
-    return S;
-}
-
-
-int main(int argc, char* argv[]) {
-    if (argc != 4) {
-        cerr << "Usage: ./project <cache.org> <reference.lst> <index.rpt>" << endl;
+// --- Main Function ---
+int main(int argc, char *argv[]) {
+    if(argc != 4) {
+        cout << "Usage: ./project <cache.org> <reference.lst> <index.rpt>" << endl;
         return 1;
     }
 
-    string org_file = argv[1];
-    string lst_file = argv[2];
-    string rpt_file = argv[3];
+    ifstream infile;
+    ofstream outfile;
+    Simulate simulate;
 
-    Config cfg;
-
-    ifstream fin_org(org_file);
-    if (!fin_org) { cerr << "Error opening " << org_file << endl; return 1; }
+    // 1. Read Config (Robust)
+    infile.open(argv[1]);
+    if (!infile) { cout << "Error opening " << argv[1] << endl; return 1; }
     
-    read_config_value(fin_org, cfg.address_bits);
-    read_config_value(fin_org, cfg.block_size);
-    read_config_value(fin_org, cfg.cache_sets);
-    read_config_value(fin_org, cfg.associativity);
-    fin_org.close();
+    int val;
+    read_config_value(infile, val); simulate.set_address_bits(val);
+    read_config_value(infile, val); simulate.set_block_size(val);
+    read_config_value(infile, val); simulate.set_cache_sets(val);
+    read_config_value(infile, val); simulate.set_associativity(val);
+    infile.close();
 
-    cfg.offset_bit_count = log2_int(cfg.block_size);
-    cfg.index_bit_count = log2_int(cfg.cache_sets);
+    // 2. Read Trace & Setup
+    infile.open(argv[2]);
+    if (!infile) { cout << "Error opening " << argv[2] << endl; return 1; }
+    simulate.set_corr_matrix(infile); // Reads trace inside
+    infile.close();
 
-    ifstream fin_lst(lst_file);
-    if (!fin_lst) { cerr << "Error opening " << lst_file << endl; return 1; }
-    
-    vector<string> trace_strings;
-    vector<unsigned long long> trace_data;
-    string line;
-    bool reading_benchmark = false;
-    
-    while (fin_lst >> line) {
-        if (line == ".benchmark") {
-            fin_lst >> line; 
-            reading_benchmark = true;
-            continue;
-        }
-        if (line == ".end") break;
-        if (reading_benchmark) {
-            trace_strings.push_back(line);
-            trace_data.push_back(binaryStringToInt(line));
-        }
-    }
-    fin_lst.close();
+    // 3. Initialize & Run Optimization
+    simulate.initialize(); // Runs recursion
+    simulate.simulation(); // Runs cache sim on candidates
 
-    vector<int> index_bits = calculate_optimized_bits(cfg, trace_data);
-
-    vector<CacheSet> cache(cfg.cache_sets);
-    for (int i = 0; i < cfg.cache_sets; ++i) {
-        cache[i].blocks.resize(cfg.associativity);
-        cache[i].clock_hand = 0;
-        for (int j = 0; j < cfg.associativity; ++j) {
-            cache[i].blocks[j].valid = false;
-            cache[i].blocks[j].ref_bit = 0;
-            cache[i].blocks[j].tag = 0;
-        }
-    }
-
-    ofstream out(rpt_file);
-    out << "Address bits: " << cfg.address_bits << endl;
-    out << "Block size: " << cfg.block_size << endl;
-    out << "Cache sets: " << cfg.cache_sets << endl;
-    out << "Associativity: " << cfg.associativity << endl;
-    out << "Offset bit count: " << cfg.offset_bit_count << endl;
-    out << "Indexing bit count: " << cfg.index_bit_count << endl;
-    
-    out << "Indexing bits:";
-    for (int b : index_bits) {
-        out << " " << b;
-    }
-    out << endl;
-    out << ".benchmark testcase1" << endl;
-
-    int total_miss = 0;
-
-    for (size_t t = 0; t < trace_data.size(); ++t) {
-        unsigned long long addr = trace_data[t];
-        string addr_str = trace_strings[t];
-
-        int set_idx = get_set_index(addr, index_bits);
-        CacheSet& set = cache[set_idx];
-
-        unsigned long long tag = addr >> cfg.offset_bit_count;
-
-        bool hit = false;
-        int hit_way = -1;
-
-        for (int i = 0; i < cfg.associativity; ++i) {
-            if (set.blocks[i].valid && set.blocks[i].tag == tag) {
-                hit = true;
-                hit_way = i;
-                break;
-            }
-        }
-
-        if (hit) {
-            out << addr_str << " hit" << endl;
-            set.blocks[hit_way].ref_bit = 1;
-        } else {
-            out << addr_str << " miss" << endl;
-            total_miss++;
-
-            int ways = cfg.associativity;
-            int& hand = set.clock_hand;
-            int target_way = -1;
-
-            while (true) {
-                if (!set.blocks[hand].valid) {
-                    target_way = hand;
-                    hand = (hand + 1) % ways;
-                    break;
-                }
-                
-                if (set.blocks[hand].ref_bit == 1) {
-                    // Second chance: bit=0, move pointer
-                    set.blocks[hand].ref_bit = 0;
-                    hand = (hand + 1) % ways;
-                } else {
-                    target_way = hand;
-                    hand = (hand + 1) % ways;
-                    break;
-                }
-            }
-
-            set.blocks[target_way].valid = true;
-            set.blocks[target_way].tag = tag;
-            set.blocks[target_way].ref_bit = 1; 
-        }
-    }
-
-    out << ".end" << endl;
-    out << "Total cache miss count: " << total_miss << endl;
-    out.close();
+    // 4. Output Results
+    outfile.open(argv[3]);
+    if (!outfile) { cout << "Error opening " << argv[3] << endl; return 1; }
+    simulate.output(outfile);
+    outfile.close();
 
     return 0;
+}
+
+// --- Implementation of Simulate ---
+
+void Simulate::set_corr_matrix(ifstream& infile) {
+    string line;
+    // Skip to benchmark name or just find it
+    // Handle user's read logic, assuming .benchmark is present
+    while(infile >> line) {
+        if(line == ".benchmark") {
+            infile >> benchmark;
+            break;
+        }
+    }
+    
+    // Read references
+    while(infile >> line) {
+        if(line == ".end") break;
+        // Reverse so index 0 is LSB (matches your logic)
+        reverse(line.begin(), line.end());
+        ref.push_back(line);
+    }
+
+    // Build Correlation Matrix
+    correlation_matrix = new vector< vector<double> >(cache_bits, vector<double>(cache_bits, 0));
+    int N = ref.size();
+    
+    for(int i = 0; i < N; i++) {
+        for(int j = 0; j < cache_bits; j++) {
+            for(int k = j + 1; k < cache_bits; k++) {
+                // j and k are bit positions relative to offset
+                if(ref[i][j+offset_bits] == ref[i][k+offset_bits]) {
+                    (*correlation_matrix)[j][k]++;
+                    (*correlation_matrix)[k][j]++;
+                }
+            }
+        }
+    }
+    
+    // Normalize (Eq 7 in paper)
+    for(int i = 0; i < cache_bits; i++) {
+        for(int j = 0; j < cache_bits; j++) {
+            double E = (*correlation_matrix)[i][j];
+            double D = N - E;
+            double val = 0;
+            if(max(E, D) > 0) val = min(E, D) / max(E, D);
+            (*correlation_matrix)[i][j] = val;
+        }
+    }
+}
+
+void Simulate::initialize() {
+    // Calc Quality (Eq 5 in paper)
+    vector<double> quality(cache_bits, 0);
+    int N = ref.size();
+
+    for(int i = 0; i < N; i++) {
+        for(int j = 0; j < cache_bits; j++) {
+            if(ref[i][j+offset_bits] == '1') quality[j]++;
+        }
+    }
+
+    for(int i = 0; i < cache_bits; i++) {
+        double ones = quality[i];
+        double zeros = N - ones;
+        if(max(ones, zeros) > 0)
+            quality[i] = min(ones, zeros) / max(ones, zeros);
+        else 
+            quality[i] = 0;
+    }
+
+    // Start Recursion to find candidate bits
+    recursion(index_bits_num, quality, set<int>());
+    
+    // Fallback: If recursion didn't produce candidates (e.g. strict filtering), add LSB
+    if(candidates.empty()) {
+        set<int> lsb_set;
+        for(int i=0; i<index_bits_num; i++) lsb_set.insert(i);
+        candidates.insert(lsb_set);
+    }
+}
+
+void Simulate::recursion(int bits_remain, vector<double> quality, set<int> current_idx){
+    if(bits_remain == 0) {
+        candidates.insert(current_idx);
+        return;
+    }
+
+    // Find max quality
+    double max_q = -1.0;
+    for(int j = 0; j < cache_bits; j++) {
+        if(quality[j] > max_q) max_q = quality[j];
+    }
+
+    // Select bits close to max quality
+    bool found = false;
+    for(int j = 0; j < cache_bits; j++) {
+        // Your logic: if quality is high enough relative to max (or absolute threshold)
+        // Adjusted: Pick the absolute max to behave like Greedy (Algorithm 1)
+        // Or keep your logic if it's working:
+        if(quality[j] >= max_q - 0.001 && quality[j] > 0) { // Simple float comparison
+             found = true;
+             set<int> next_idx = current_idx;
+             next_idx.insert(j);
+             
+             // Update quality with correlation
+             vector<double> next_quality = quality;
+             next_quality[j] = -1.0; // Mark as used
+             
+             for(int k = 0; k < cache_bits; k++) {
+                 if(next_quality[k] != -1.0) {
+                     next_quality[k] *= (*correlation_matrix)[j][k];
+                 }
+             }
+             recursion(bits_remain - 1, next_quality, next_idx);
+             // Break after finding the best to avoid explosion (Greedy approach)
+             break; 
+        }
+    }
+    
+    // If all qualities are 0 or none found, pick first available
+    if(!found) {
+         for(int j=0; j<cache_bits; j++) {
+             if(current_idx.find(j) == current_idx.end()) {
+                 set<int> next_idx = current_idx;
+                 next_idx.insert(j);
+                 recursion(bits_remain-1, quality, next_idx); // Pass same quality, just pick one
+                 break;
+             }
+         }
+    }
+}
+
+void Simulate::simulation() {
+    min_miss = 1e9;
+
+    for(auto it = candidates.begin(); it != candidates.end(); ++it) {
+        int tmp_miss = 0;
+        simulate_cache.clear(); // Reset cache for new candidate
+
+        for(int i=0; i<ref.size(); i++){
+            // Construct Index and Tag
+            // Note: ref[i] is REVERSED. offset_bits is from index 0.
+            // j iterates 0 to cache_bits-1. Actual bit index is j + offset_bits.
+            
+            string index_str = "";
+            string tag_str = "";
+            
+            for(int j = 0; j < cache_bits; j++) {
+                char bit = ref[i][j + offset_bits];
+                if(it->find(j) != it->end()) {
+                    index_str += bit;
+                } else {
+                    tag_str += bit;
+                }
+            }
+            
+            // Access Cache
+            if(simulate_cache.find(index_str) == simulate_cache.end()) {
+                simulate_cache[index_str] = Cache(associativity);
+            }
+            
+            if(!simulate_cache[index_str].access(tag_str)) {
+                tmp_miss++;
+            }
+        }
+        
+        if(tmp_miss < min_miss) {
+            min_miss = tmp_miss;
+            best_bits = *it;
+        }
+    }
+}
+
+void Simulate::output(ofstream& outfile) {
+    outfile << "Address bits: " << address_bits << endl;
+    outfile << "Block size: " << block_size << endl;
+    outfile << "Cache sets: " << cache_sets << endl;
+    outfile << "Associativity: " << associativity << endl;
+    outfile << "Offset bit count: " << offset_bits << endl;
+    outfile << "Indexing bit count: " << index_bits_num << endl;
+    
+    outfile << "Indexing bits:";
+    // Output from MSB to LSB (standard format)
+    // best_bits contains indices relative to offset. 
+    // Actual bit index = val + offset_bits.
+    vector<int> out_bits;
+    for(int b : best_bits) out_bits.push_back(b + offset_bits);
+    sort(out_bits.rbegin(), out_bits.rend()); // Sort descending
+    
+    for(int b : out_bits) outfile << " " << b;
+    outfile << endl;
+    
+    outfile << ".benchmark " << benchmark << endl;
+
+    // Run one last time with best bits to print details
+    simulate_cache.clear();
+    for(int i=0; i<ref.size(); i++){
+        string index_str = "";
+        string tag_str = "";
+        for(int j = 0; j < cache_bits; j++) {
+            char bit = ref[i][j + offset_bits];
+            if(best_bits.find(j) != best_bits.end()) {
+                index_str += bit;
+            } else {
+                tag_str += bit;
+            }
+        }
+        
+        if(simulate_cache.find(index_str) == simulate_cache.end()) {
+            simulate_cache[index_str] = Cache(associativity);
+        }
+        
+        bool hit = simulate_cache[index_str].access(tag_str);
+        
+        // Print original string (need to reverse back)
+        string orig = ref[i];
+        reverse(orig.begin(), orig.end());
+        
+        outfile << orig << " " << (hit ? "hit" : "miss") << endl;
+    }
+    
+    outfile << ".end" << endl;
+    outfile << "Total cache miss count: " << min_miss << endl;
 }

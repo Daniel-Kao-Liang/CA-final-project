@@ -4,7 +4,7 @@ Cache sets: 4
 Associativity: 2
 Offset bit count: 2
 Indexing bit count: 2
-Indexing bits: 5 2
+Indexing bits: 5 4
 .benchmark testcase1
 00000000 miss
 00010000 miss
