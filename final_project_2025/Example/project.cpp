@@ -10,8 +10,6 @@
 
 using namespace std;
 
-// --- Helper for Robust Config Reading ---
-// 解決 Address_bits 與 Address bits 格式不一致的問題
 void read_config_value(ifstream& infile, int& value) {
     string label;
     infile >> label; 
@@ -21,7 +19,6 @@ void read_config_value(ifstream& infile, int& value) {
     infile >> value;
 }
 
-// --- Block Class ---
 class Block{
 public:
     bool valid;
@@ -35,7 +32,6 @@ public:
     }
 };
 
-// --- Cache Class (Fixed Clock Policy) ---
 class Cache{
 public:
     Cache() {
@@ -48,13 +44,13 @@ public:
         if(associativity > 0) blocks.resize(associativity);
     }
     
-    // 回傳 true 代表 Hit, false 代表 Miss
+    // true => Hit, false => Miss
     bool access(string tag) {
         // 1. Check Hit
         for(int i = 0; i < associativity; i++) {
             if(blocks[i].valid && blocks[i].tag == tag) {
                 blocks[i].ref_bit = 1; // Hit: set ref to 1
-                return true; // Hit: No pointer movement
+                return true;
             }
         }
 
@@ -65,7 +61,7 @@ public:
                 blocks[clock_hand].valid = true;
                 blocks[clock_hand].tag = tag;
                 blocks[clock_hand].ref_bit = 1; // Insert: set to 1
-                clock_hand = (clock_hand + 1) % associativity; // Move next
+                clock_hand = (clock_hand + 1) % associativity; //next
                 return false;
             }
 
@@ -74,6 +70,7 @@ public:
                 blocks[clock_hand].ref_bit = 0; // Reset to 0
                 clock_hand = (clock_hand + 1) % associativity; // Move next
             } 
+
             // Case C: Victim Found
             else {
                 // Replace
@@ -88,10 +85,9 @@ public:
 private:
     vector<Block> blocks;
     int associativity;
-    int clock_hand; // [Critical Fix] Clock Policy needs a pointer
+    int clock_hand;
 };
 
-// --- Simulate Class (Preserved Your Logic) ---
 class Simulate{
 public:
     Simulate() {
@@ -112,15 +108,15 @@ public:
         index_bits_num = (int)log2(cache_sets);
     }
     void set_associativity(int v) { associativity = v;}
-    
-    // Getters
+    void set_use_lsb_mode(bool v) { use_lsb_mode = v; }
+
+    // Get
     int get_address_bits() { return address_bits;}
     int get_block_size() { return block_size;}
     int get_cache_sets() { return cache_sets;}
     int get_associativity() { return associativity;}
     int get_offset_bits() { return offset_bits; }
     int get_index_bits_num() { return index_bits_num; }
-
     void simulation();
     void recursion(int bits_remain, vector<double> quality, set<int> current_idx);
     void initialize();
@@ -135,6 +131,7 @@ private:
     int offset_bits;
     int index_bits_num;
     int cache_bits; // M - O
+    bool use_lsb_mode = true;
     
     vector<string> ref; // Stores reversed binary strings
     set< set < int > > candidates; // Changed name from index_bits to avoid confusion
@@ -146,16 +143,25 @@ private:
     set < int > best_bits;
 };
 
-// --- Main Function ---
 int main(int argc, char *argv[]) {
-    if(argc != 4) {
-        cout << "Usage: ./project <cache.org> <reference.lst> <index.rpt>" << endl;
+    if(argc != 4 && argc != 5) {
+        cout << "Usage: ./project <cache.org> <reference.lst> <index.rpt> [opt]" << endl;
+        cout << "  (no [opt]) : LSB baseline indexing" << endl;
+        cout << "  ([opt])    : your optimized indexing" << endl;
         return 1;
     }
 
     ifstream infile;
     ofstream outfile;
     Simulate simulate;
+    
+    // argc==4 => LSB, argc==5 => optimized
+    bool use_opt = (argc == 5);
+    simulate.set_use_lsb_mode(!use_opt);
+
+    // set mode
+    // simulate.set_use_lsb_mode(true);
+    simulate.set_use_lsb_mode(false);
 
     // 1. Read Config (Robust)
     infile.open(argv[1]);
@@ -187,8 +193,6 @@ int main(int argc, char *argv[]) {
     return 0;
 }
 
-// --- Implementation of Simulate ---
-
 void Simulate::set_corr_matrix(ifstream& infile) {
     string line;
     // Skip to benchmark name or just find it
@@ -203,12 +207,11 @@ void Simulate::set_corr_matrix(ifstream& infile) {
     // Read references
     while(infile >> line) {
         if(line == ".end") break;
-        // Reverse so index 0 is LSB (matches your logic)
+        // Reverse so index 0 is LSB
         reverse(line.begin(), line.end());
         ref.push_back(line);
     }
 
-    // Build Correlation Matrix
     correlation_matrix = new vector< vector<double> >(cache_bits, vector<double>(cache_bits, 0));
     int N = ref.size();
     
@@ -224,7 +227,6 @@ void Simulate::set_corr_matrix(ifstream& infile) {
         }
     }
     
-    // Normalize (Eq 7 in paper)
     for(int i = 0; i < cache_bits; i++) {
         for(int j = 0; j < cache_bits; j++) {
             double E = (*correlation_matrix)[i][j];
@@ -237,7 +239,15 @@ void Simulate::set_corr_matrix(ifstream& infile) {
 }
 
 void Simulate::initialize() {
-    // Calc Quality (Eq 5 in paper)
+    //LSB only
+    if (use_lsb_mode) {
+        set<int> lsb_set;
+        for(int i = 0; i < index_bits_num; i++) lsb_set.insert(i);
+        candidates.insert(lsb_set);
+        return;
+    }
+
+    candidates.clear();
     vector<double> quality(cache_bits, 0);
     int N = ref.size();
 
@@ -256,10 +266,8 @@ void Simulate::initialize() {
             quality[i] = 0;
     }
 
-    // Start Recursion to find candidate bits
     recursion(index_bits_num, quality, set<int>());
     
-    // Fallback: If recursion didn't produce candidates (e.g. strict filtering), add LSB
     if(candidates.empty()) {
         set<int> lsb_set;
         for(int i=0; i<index_bits_num; i++) lsb_set.insert(i);
@@ -282,10 +290,8 @@ void Simulate::recursion(int bits_remain, vector<double> quality, set<int> curre
     // Select bits close to max quality
     bool found = false;
     for(int j = 0; j < cache_bits; j++) {
-        // Your logic: if quality is high enough relative to max (or absolute threshold)
-        // Adjusted: Pick the absolute max to behave like Greedy (Algorithm 1)
-        // Or keep your logic if it's working:
-        if(quality[j] >= max_q - 0.001 && quality[j] > 0) { // Simple float comparison
+        // Pick the absolute max to behave like Greedy
+        if(quality[j] >= max_q - 0.0005 && quality[j] > 0) { 
              found = true;
              set<int> next_idx = current_idx;
              next_idx.insert(j);
@@ -301,7 +307,7 @@ void Simulate::recursion(int bits_remain, vector<double> quality, set<int> curre
              }
              recursion(bits_remain - 1, next_quality, next_idx);
              // Break after finding the best to avoid explosion (Greedy approach)
-             break; 
+            //  break;
         }
     }
     
@@ -312,7 +318,7 @@ void Simulate::recursion(int bits_remain, vector<double> quality, set<int> curre
                  set<int> next_idx = current_idx;
                  next_idx.insert(j);
                  recursion(bits_remain-1, quality, next_idx); // Pass same quality, just pick one
-                 break;
+                //  break;
              }
          }
     }
