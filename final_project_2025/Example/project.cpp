@@ -10,15 +10,6 @@
 
 using namespace std;
 
-void read_config_value(ifstream& infile, int& value) {
-    string label;
-    infile >> label; 
-    if (label.back() != ':') { 
-        infile >> label; 
-    }
-    infile >> value;
-}
-
 class Block{
 public:
     bool valid;
@@ -144,10 +135,9 @@ private:
 };
 
 int main(int argc, char *argv[]) {
+    // 參數檢查
     if(argc != 4 && argc != 5) {
         cout << "Usage: ./project <cache.org> <reference.lst> <index.rpt> [opt]" << endl;
-        cout << "  (no [opt]) : LSB baseline indexing" << endl;
-        cout << "  ([opt])    : your optimized indexing" << endl;
         return 1;
     }
 
@@ -155,34 +145,47 @@ int main(int argc, char *argv[]) {
     ofstream outfile;
     Simulate simulate;
     
-    // argc==4 => LSB, argc==5 => optimized
     bool use_opt = (argc == 5);
     simulate.set_use_lsb_mode(!use_opt);
 
-    // set mode
     // simulate.set_use_lsb_mode(true);
     simulate.set_use_lsb_mode(false);
 
-    // 1. Read Config (Robust)
     infile.open(argv[1]);
     if (!infile) { cout << "Error opening " << argv[1] << endl; return 1; }
     
-    int val;
-    read_config_value(infile, val); simulate.set_address_bits(val);
-    read_config_value(infile, val); simulate.set_block_size(val);
-    read_config_value(infile, val); simulate.set_cache_sets(val);
-    read_config_value(infile, val); simulate.set_associativity(val);
+    string line;
+    int tmp;
+    
+    for(int i = 0; i < 4; i++) {
+        infile >> line >> tmp;
+        
+        switch (i) {
+            case 0:
+                simulate.set_address_bits(tmp);
+                break;
+            case 1:
+                simulate.set_block_size(tmp);
+                break;
+            case 2:
+                simulate.set_cache_sets(tmp);
+                break;
+            case 3:
+                simulate.set_associativity(tmp);
+                break;
+        }
+    }
     infile.close();
 
     // 2. Read Trace & Setup
     infile.open(argv[2]);
     if (!infile) { cout << "Error opening " << argv[2] << endl; return 1; }
-    simulate.set_corr_matrix(infile); // Reads trace inside
+    simulate.set_corr_matrix(infile); 
     infile.close();
 
     // 3. Initialize & Run Optimization
-    simulate.initialize(); // Runs recursion
-    simulate.simulation(); // Runs cache sim on candidates
+    simulate.initialize(); 
+    simulate.simulation(); 
 
     // 4. Output Results
     outfile.open(argv[3]);
